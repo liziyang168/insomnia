@@ -25,7 +25,6 @@ import { SettingsModal, showSettingsModal } from '~/ui/components/modals/setting
 import { PresentUsers } from '~/ui/components/present-users';
 import { OrganizationSelect } from '~/ui/components/project/organization-select';
 import { InsomniaEventStreamProvider } from '~/ui/context/app/insomnia-event-stream-context';
-import { InsomniaTanstackQueryClientContext } from '~/ui/context/app/insomnia-query-client';
 import { SidebarContext } from '~/ui/context/app/insomnia-sidebar-context';
 import { InsomniaTabProvider } from '~/ui/context/app/insomnia-tab-context';
 import { RunnerProvider } from '~/ui/context/app/runner-context';
@@ -276,7 +275,6 @@ const Component = ({ loaderData }: Route.ComponentProps) => {
     <InsomniaEventStreamProvider>
       <InsomniaTabProvider>
         <SidebarContext.Provider value={{ isSidebarCollapsed: isSidebarCollapsed ?? false, toggleSidebar }}>
-          <InsomniaTanstackQueryClientContext organizationId={organizationId}>
             <div className="h-full w-full">
               <div
                 className={`grid-template-app-layout relative grid h-full w-full divide-x divide-solid divide-(--hl-md) bg-(--color-bg)`}
@@ -436,7 +434,6 @@ const Component = ({ loaderData }: Route.ComponentProps) => {
                 </div>
               </div>
             </div>
-          </InsomniaTanstackQueryClientContext>
         </SidebarContext.Provider>
       </InsomniaTabProvider>
     </InsomniaEventStreamProvider>

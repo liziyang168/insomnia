@@ -1,4 +1,3 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { StorageRules } from 'insomnia-api';
 import type { CollectionWorkspaceChildren, RequestGroup, Workspace } from 'insomnia-data';
@@ -27,7 +26,7 @@ import {
   Tooltip,
   TooltipTrigger,
 } from 'react-aria-components';
-import { href, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import * as reactUse from 'react-use';
 
 import { Button as BasicButton } from '~/basic-components/button';
@@ -54,7 +53,7 @@ import { KonnectSyncIntro } from '~/ui/components/sidebar/project-navigation-sid
 import { UnsyncedWorkspaceNode } from '~/ui/components/sidebar/project-navigation-sidebar/unsynced-workspace-node';
 import uiEventBus, { CLOUD_SYNC_FILE_CHANGE } from '~/ui/event-bus';
 import { useOrganizationData } from '~/ui/hooks/data/use-organization-data';
-import { useWorkspaceChildrenByWorkspaceIds, workspaceChildrenKeys } from '~/ui/hooks/data/use-workspace-children';
+import { useCollectionWorkspaceChildren } from '~/ui/hooks/data/use-workspace-children';
 import { useTabNavigate } from '~/ui/hooks/use-insomnia-tab';
 import { useKonnectSync } from '~/ui/hooks/use-konnect-sync';
 import { useOrganizationPermissions } from '~/ui/hooks/use-organization-features';
@@ -208,6 +207,8 @@ const ProjectNavigationSidebarInner = (
   const [collectionSortOrders, setCollectionSortOrders] = useState<Record<string, SortOrder>>({});
   const [projectWorkspaceSortOrder, setProjectWorkspaceSortOrder] = useState<Record<string, WorkspaceSortOrder>>({});
   const [unsyncedFilesByProjectId, setUnsyncedFilesByProjectId] = useState<Map<string, InsomniaFile[]>>(new Map());
+  // Optimistic override for request-group collapsed states
+  const [requestGroupCollapseOverrides, setRequestGroupCollapseOverrides] = useState<Map<string, boolean>>(new Map());
   // Customized workspace sort orders by projectId
   const [localWorkspaceOrders, setLocalWorkspaceOrders] = reactUse.useLocalStorage<Record<string, string[]>>(
     `${organizationId}:local-workspace-orders`,
@@ -233,7 +234,6 @@ const ProjectNavigationSidebarInner = (
     null,
   );
 
-  const queryClient = useQueryClient();
   const {
     projects: organizationProjects,
     workspaces: organizationWorkspaces,
@@ -261,7 +261,7 @@ const ProjectNavigationSidebarInner = (
     });
     return ids;
   }, [projectIds, organizationWorkspaces, projectNavigationSidebarFilter, expandedProjectAndWorkspaceIds]);
-  const collectionByWorkspaceId = useWorkspaceChildrenByWorkspaceIds(collectionWorkspaceIds, 'collection');
+  const collectionByWorkspaceId = useCollectionWorkspaceChildren(collectionWorkspaceIds);
   const nonKonnectProjects = organizationProjects.filter(p => !p.konnectControlPlaneId);
   const konnectProjects = organizationProjects.filter(p => p.konnectControlPlaneId != null);
   const [filterInputValue, setFilterInputValue] = useState(projectNavigationSidebarFilter || '');
@@ -483,10 +483,6 @@ const ProjectNavigationSidebarInner = (
     return uiEventBus.on(CLOUD_SYNC_FILE_CHANGE, updateUnsyncedFiles);
   }, [getAllRemoteFilesByProjectId, organizationId]);
 
-  // Note: the local-db → query-cache sync (invalidate/patch on db.changes) is registered once at the
-  // provider level in `subscribeQueryClientToDbChanges`, so it stays active even when this sidebar is
-  // unmounted. Do not re-register it here.
-
   const flatItems = useMemo<FlatItem[]>(() => {
     const buildWorkspaceAndCollectionData = (): FlatItem[] => {
       const items: FlatItem[] = [];
@@ -599,9 +595,28 @@ const ProjectNavigationSidebarInner = (
               hidden: isProjectCollapsed,
             });
 
-            const allRequestsAndMetaInWorkspace = collectionChildrenAndMetaByWorkspaceId.get(
+            const rawRequestsAndMetaInWorkspace = collectionChildrenAndMetaByWorkspaceId.get(
               workspaceId,
             ) as CollectionWorkspaceChildren;
+            // Apply optimistic request-group collapse overrides on top of the fetched data.
+            const allRequestsAndMetaInWorkspace =
+              rawRequestsAndMetaInWorkspace && requestGroupCollapseOverrides.size > 0
+                ? {
+                    ...rawRequestsAndMetaInWorkspace,
+                    childrenMetas: {
+                      ...rawRequestsAndMetaInWorkspace.childrenMetas,
+                      requestGroupMetas: rawRequestsAndMetaInWorkspace.childrenMetas.requestGroupMetas.map(
+                        requestGroupMeta =>
+                          requestGroupCollapseOverrides.has(requestGroupMeta.parentId)
+                            ? {
+                                ...requestGroupMeta,
+                                collapsed: requestGroupCollapseOverrides.get(requestGroupMeta.parentId)!,
+                              }
+                            : requestGroupMeta,
+                      ),
+                    },
+                  }
+                : rawRequestsAndMetaInWorkspace;
             // build collection children if it's a collection workspace and parent workspace and project are not collapsed or there is an active filter
             const shouldHideCollectionChildren = isWorkspaceCollapsed || isProjectCollapsed;
             let collectionChildren =
@@ -741,6 +756,7 @@ const ProjectNavigationSidebarInner = (
     organizationId,
     organizationWorkspaces,
     projectWorkspaceSortOrder,
+    requestGroupCollapseOverrides,
     unsyncedFilesByProjectId,
     workspaceMetas,
   ]);
@@ -837,7 +853,7 @@ const ProjectNavigationSidebarInner = (
   );
 
   const toggleRequestGroups = useCallback(
-    async (requestGroupIds: string[], workspace: Workspace, collapsed?: boolean) => {
+    async (requestGroupIds: string[], _workspace: Workspace, collapsed?: boolean) => {
       if (requestGroupIds.length === 0) {
         return;
       }
@@ -858,30 +874,13 @@ const ProjectNavigationSidebarInner = (
         };
       });
 
-      const collapsedByRequestGroupId = new Map(
-        nextStates.map(({ requestGroupId, collapsed }) => [requestGroupId, collapsed]),
-      );
+      // Optimistically reflect the new collapsed state immediately
+      setRequestGroupCollapseOverrides(previous => {
+        const next = new Map(previous);
+        nextStates.forEach(({ requestGroupId, collapsed }) => next.set(requestGroupId, collapsed));
+        return next;
+      });
 
-      // Optimistically update the cached collection so the tree re-renders immediately.
-      queryClient.setQueryData<CollectionWorkspaceChildren>(
-        workspaceChildrenKeys.byWorkspaceId(workspace._id),
-        previous => {
-          if (!previous) {
-            return previous;
-          }
-          return {
-            ...previous,
-            childrenMetas: {
-              ...previous.childrenMetas,
-              requestGroupMetas: previous.childrenMetas.requestGroupMetas.map(requestGroupMeta =>
-                collapsedByRequestGroupId.has(requestGroupMeta.parentId)
-                  ? { ...requestGroupMeta, collapsed: collapsedByRequestGroupId.get(requestGroupMeta.parentId)! }
-                  : requestGroupMeta,
-              ),
-            },
-          };
-        },
-      );
       // Persist the change to database
       await Promise.all(
         nextStates.map(({ requestGroupId, collapsed }) =>
@@ -889,8 +888,31 @@ const ProjectNavigationSidebarInner = (
         ),
       );
     },
-    [activeFilter, queryClient],
+    [activeFilter],
   );
+
+  // Update the requestGroupCollapseOverrides when the collectionByWorkspaceId changes to remove any overrides that are no longer needed.
+  useEffect(() => {
+    setRequestGroupCollapseOverrides(previous => {
+      if (previous.size === 0) {
+        return previous;
+      }
+      let changed = false;
+      const next = new Map(previous);
+      for (const [requestGroupId, overrideCollapsed] of previous) {
+        for (const data of collectionByWorkspaceId.values()) {
+          const collectionData = data;
+          const meta = collectionData?.childrenMetas?.requestGroupMetas?.find(m => m.parentId === requestGroupId);
+          if (meta && meta.collapsed === overrideCollapsed) {
+            next.delete(requestGroupId);
+            changed = true;
+            break;
+          }
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [collectionByWorkspaceId]);
 
   const parentRef = useRef<HTMLDivElement>(null);
   const shortcutCreateTriggerRef = useRef<HTMLElement | null>(null);
