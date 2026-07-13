@@ -364,6 +364,7 @@ export function createCachedAppDataService(
     return result;
   };
 
+  // Register a listener to invalidate the cache when the database changes.
   db.onChange(changes => invalidateCacheData(queryClient, changes));
 
   return {
