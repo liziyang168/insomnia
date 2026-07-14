@@ -176,7 +176,8 @@ function invalidateCacheData(queryClient: QueryClient, changes: ChangeBufferEven
   const organizationIdsToRevalidate = new Set<string>();
   const workspaceIdsToRevalidate: string[] = [];
 
-  for (const [event, doc, patches] of changes) {
+  for (const [event, doc] of changes) {
+    // We do not use the patches here because some db operations do not contain patches like git repo file watcher
     if (!MONITOR_DOC_TYPES.includes(doc.type)) {
       continue;
     }
@@ -211,25 +212,29 @@ function invalidateCacheData(queryClient: QueryClient, changes: ChangeBufferEven
 
     if (COLLECTION_CHILDREN_DOC_TYPES.includes(doc.type)) {
       if (event === 'update') {
-        const isParentIdChange = patches.some(patch => 'parentId' in patch);
-        if (!isParentIdChange) {
-          const docWorkspaceId = findWorkspaceIdForDoc(queryClient, doc);
-          if (docWorkspaceId) {
-            queryClient.setQueryData<CollectionWorkspaceChildren>(
-              workspaceChildrenKeys.byWorkspaceId(docWorkspaceId),
-              previous => {
-                if (previous) {
-                  const updated = updateCollectionChildrenWithUpdatedDoc(previous, doc);
-                  if (updated) {
-                    return updated;
-                  }
+        const docWorkspaceId = findWorkspaceIdForDoc(queryClient, doc);
+        // update the cached collection children if the doc is already cached, otherwise invalidate the cache for the workspace
+        let isUpdated = false;
+        if (docWorkspaceId) {
+          queryClient.setQueryData<CollectionWorkspaceChildren>(
+            workspaceChildrenKeys.byWorkspaceId(docWorkspaceId),
+            previous => {
+              if (previous) {
+                const updated = updateCollectionChildrenWithUpdatedDoc(previous, doc);
+                if (updated) {
+                  isUpdated = true;
+                  return updated;
                 }
-                return previous;
-              },
-            );
-          }
+              }
+              return previous;
+            },
+          );
+        }
+        if (isUpdated) {
           continue;
         }
+
+        // Handle either the doc isn't cached yet, or it moved to a different parent
         const docId = doc._id;
         const docNewParentId = doc.parentId;
         let originDocWorkspaceId: string | undefined;
@@ -246,9 +251,11 @@ function invalidateCacheData(queryClient: QueryClient, changes: ChangeBufferEven
             continue;
           }
           if (data.children.requestsAndGroups.some(r => r._id === docId)) {
+            // find origin workspace id for doc by _id, since the parentId may have changed
             originDocWorkspaceId = workspaceId;
           }
           if (data.children.requestsAndGroups.some(r => r._id === docNewParentId)) {
+            // find the new workspace id for doc by parentId
             newDocWorkspaceId = workspaceId;
           }
         }
@@ -310,32 +317,6 @@ export function createCachedAppDataService(
     });
   }
 
-  const pendingWorkspaceChildrenFetches = new Map<
-    string,
-    { ids: Set<string>; promise: Promise<Map<string, WorkspaceChildren>> }
-  >();
-
-  // Combine every workspaceId requested within the same microtask, for a given scope, into a
-  // single underlying DB sweep — mirrors the batching that used to live in the renderer hook.
-  const loadUncachedWorkspaceChildren = (
-    workspaceIds: string[],
-    scope: WorkspaceScope | undefined,
-  ): Promise<Map<string, WorkspaceChildren>> => {
-    const scopeKey = scope || '__all__';
-    let pending = pendingWorkspaceChildrenFetches.get(scopeKey);
-    if (!pending) {
-      const ids = new Set<string>();
-      const promise = Promise.resolve().then(() => {
-        pendingWorkspaceChildrenFetches.delete(scopeKey);
-        return appData.getWorkspaceChildren([...ids], scope);
-      });
-      pending = { ids, promise };
-      pendingWorkspaceChildrenFetches.set(scopeKey, pending);
-    }
-    workspaceIds.forEach(id => pending!.ids.add(id));
-    return pending.promise;
-  };
-
   const getOrganizationData = (organizationId: string): Promise<OrganizationData> =>
     queryClient.fetchQuery({
       queryKey: organizationDataKeys.byOrganizationId(organizationId),
@@ -352,7 +333,7 @@ export function createCachedAppDataService(
         const data = await queryClient.fetchQuery({
           queryKey: workspaceChildrenKeys.byWorkspaceId(workspaceId),
           queryFn: async () => {
-            const fetched = await loadUncachedWorkspaceChildren([workspaceId], scope);
+            const fetched = await appData.getWorkspaceChildren([workspaceId], scope);
             return fetched.get(workspaceId);
           },
         });

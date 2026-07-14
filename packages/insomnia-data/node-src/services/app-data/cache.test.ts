@@ -177,6 +177,60 @@ describe('createCachedAppDataService', () => {
       expect(ids).toEqual(expect.arrayContaining([requestGroup._id, webSocketRequest._id, grpcRequest._id]));
     });
 
+    it('fetches collection children for multiple workspaces independently in a single call', async () => {
+      const cached = createCachedAppDataService(servicesNodeImpl.appData, database);
+      const workspaceA = await servicesNodeImpl.workspace.create();
+      const workspaceB = await servicesNodeImpl.workspace.create();
+
+      const requestGroupA = await servicesNodeImpl.requestGroup.create({ parentId: workspaceA._id });
+      const requestA = await servicesNodeImpl.request.create({ parentId: requestGroupA._id });
+      const requestMetaA = await servicesNodeImpl.requestMeta.create({ parentId: requestA._id });
+      const requestGroupMetaA = await servicesNodeImpl.requestGroupMeta.create({ parentId: requestGroupA._id });
+
+      const webSocketRequestB = await servicesNodeImpl.webSocketRequest.create({ parentId: workspaceB._id });
+      const grpcRequestB = await servicesNodeImpl.grpcRequest.create({ parentId: workspaceB._id });
+      const webSocketRequestMetaB = await servicesNodeImpl.webSocketRequestMeta.create({
+        parentId: webSocketRequestB._id,
+      });
+
+      const result = await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+
+      const childrenA = result.get(workspaceA._id);
+      const idsA = childrenA?.children.requestsAndGroups.map(r => r._id) || [];
+      expect(idsA).toEqual(expect.arrayContaining([requestGroupA._id, requestA._id]));
+      expect(idsA).not.toEqual(expect.arrayContaining([webSocketRequestB._id, grpcRequestB._id]));
+      expect(childrenA?.childrenMetas.allRequestMetas.map(m => m._id)).toContain(requestMetaA._id);
+      expect(childrenA?.childrenMetas.requestGroupMetas.map(m => m._id)).toContain(requestGroupMetaA._id);
+
+      const childrenB = result.get(workspaceB._id);
+      const idsB = childrenB?.children.requestsAndGroups.map(r => r._id) || [];
+      expect(idsB).toEqual(expect.arrayContaining([webSocketRequestB._id, grpcRequestB._id]));
+      expect(idsB).not.toEqual(expect.arrayContaining([requestGroupA._id, requestA._id]));
+      expect(childrenB?.childrenMetas.allRequestMetas.map(m => m._id)).toContain(webSocketRequestMetaB._id);
+      expect(childrenB?.childrenMetas.allRequestMetas.map(m => m._id)).not.toContain(requestMetaA._id);
+    });
+
+    it('walks nested request groups per workspace when fetching multiple workspaces at once', async () => {
+      const cached = createCachedAppDataService(servicesNodeImpl.appData, database);
+      const workspaceA = await servicesNodeImpl.workspace.create();
+      const workspaceB = await servicesNodeImpl.workspace.create();
+
+      const outerGroupA = await servicesNodeImpl.requestGroup.create({ parentId: workspaceA._id });
+      const innerGroupA = await servicesNodeImpl.requestGroup.create({ parentId: outerGroupA._id });
+      const nestedRequestA = await servicesNodeImpl.request.create({ parentId: innerGroupA._id });
+
+      const requestB = await servicesNodeImpl.request.create({ parentId: workspaceB._id });
+
+      const result = await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+
+      const idsA = result.get(workspaceA._id)?.children.requestsAndGroups.map(r => r._id) || [];
+      expect(idsA).toEqual(expect.arrayContaining([outerGroupA._id, innerGroupA._id, nestedRequestA._id]));
+      expect(idsA).not.toContain(requestB._id);
+
+      const idsB = result.get(workspaceB._id)?.children.requestsAndGroups.map(r => r._id) || [];
+      expect(idsB).toEqual([requestB._id]);
+    });
+
     it('patches a webSocketRequest update in place without invalidating the workspace cache', async () => {
       const onUpdate = vi.fn();
       const cached = createCachedAppDataService(servicesNodeImpl.appData, database, onUpdate);
@@ -195,6 +249,71 @@ describe('createCachedAppDataService', () => {
             requestsAndGroups: expect.arrayContaining([
               expect.objectContaining({ _id: webSocketRequest._id, name: 'renamed' }),
             ]),
+          }),
+        }),
+      );
+    });
+
+    it('relocates a request between cached workspaces when the update does not report a parentId patch', async () => {
+      // Some writers upsert a whole document via `database.update(doc)` without passing a `patches` array like git repo-file-watcher
+      const cached = createCachedAppDataService(servicesNodeImpl.appData, database);
+      const workspaceA = await servicesNodeImpl.workspace.create();
+      const workspaceB = await servicesNodeImpl.workspace.create();
+      const request = await servicesNodeImpl.request.create({ parentId: workspaceA._id });
+
+      const beforeMove = await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+      expect(beforeMove.get(workspaceA._id)?.children.requestsAndGroups.map(r => r._id)).toContain(request._id);
+      expect(beforeMove.get(workspaceB._id)?.children.requestsAndGroups.map(r => r._id)).not.toContain(request._id);
+
+      await database.update({ ...request, parentId: workspaceB._id });
+
+      const afterMove = await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+      expect(afterMove.get(workspaceA._id)?.children.requestsAndGroups.map(r => r._id)).not.toContain(request._id);
+      expect(afterMove.get(workspaceB._id)?.children.requestsAndGroups.map(r => r._id)).toContain(request._id);
+    });
+    it('relocates a request that moves into a workspace not yet in the cache', async () => {
+      const cached = createCachedAppDataService(servicesNodeImpl.appData, database);
+      const workspaceA = await servicesNodeImpl.workspace.create();
+      const workspaceB = await servicesNodeImpl.workspace.create();
+      const request = await servicesNodeImpl.request.create({ parentId: workspaceA._id });
+
+      // Only workspaceA is cached before the move; workspaceB has never been fetched.
+      const beforeMove = await cached.getWorkspaceChildren([workspaceA._id], 'collection');
+      expect(beforeMove.get(workspaceA._id)?.children.requestsAndGroups.map(r => r._id)).toContain(request._id);
+
+      await database.update({ ...request, parentId: workspaceB._id });
+
+      const afterMove = await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+      expect(afterMove.get(workspaceA._id)?.children.requestsAndGroups.map(r => r._id)).not.toContain(request._id);
+      expect(afterMove.get(workspaceB._id)?.children.requestsAndGroups.map(r => r._id)).toContain(request._id);
+    });
+
+    it('pushes updates for both the origin and destination workspace when a parentId change is not patched', async () => {
+      const onUpdate = vi.fn();
+      const cached = createCachedAppDataService(servicesNodeImpl.appData, database, onUpdate);
+      const workspaceA = await servicesNodeImpl.workspace.create();
+      const workspaceB = await servicesNodeImpl.workspace.create();
+      const request = await servicesNodeImpl.request.create({ parentId: workspaceA._id });
+
+      await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+      onUpdate.mockClear();
+
+      await database.update({ ...request, parentId: workspaceB._id });
+      await cached.getWorkspaceChildren([workspaceA._id, workspaceB._id], 'collection');
+
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.arrayContaining([workspaceA._id]),
+        expect.objectContaining({
+          children: expect.objectContaining({
+            requestsAndGroups: expect.not.arrayContaining([expect.objectContaining({ _id: request._id })]),
+          }),
+        }),
+      );
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.arrayContaining([workspaceB._id]),
+        expect.objectContaining({
+          children: expect.objectContaining({
+            requestsAndGroups: expect.arrayContaining([expect.objectContaining({ _id: request._id })]),
           }),
         }),
       );
