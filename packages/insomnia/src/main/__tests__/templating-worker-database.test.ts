@@ -41,12 +41,14 @@ vi.mock('../network/libcurl-promise', () => ({ curlRequest: vi.fn() }));
 vi.mock('../prompt-bridge', () => ({ requestPromptFromRenderer: vi.fn() }));
 vi.mock('../secure-read-file', () => ({ secureReadFile: vi.fn() }));
 
+import { requestPromptFromRenderer } from '../prompt-bridge';
 import { parsePluginPermissions } from '~/common/plugins/permissions';
 
 import {
   _testOnlyResetMigrationWarnings,
   getPluginEntrySource,
   maybeWarnMissingManifest,
+  resolveDbByKey,
   runPluginTagInSandbox,
 } from '../templating-worker-database';
 
@@ -178,5 +180,29 @@ describe('runPluginTagInSandbox — util.render escape', () => {
         context: { meta: {}, renderPurpose: 'send' as const, context: { name: 'kyle' } as any },
       }),
     ).resolves.toBe('hello kyle');
+  });
+});
+
+describe('resolveDbByKey — app.prompt', () => {
+  it('routes prompt requests to the renderer prompt bridge', async () => {
+    vi.mocked(requestPromptFromRenderer).mockResolvedValueOnce('typed value');
+
+    const response = await resolveDbByKey(
+      new Request('insomnia-templating-worker-database://app.prompt', {
+        method: 'post',
+        body: JSON.stringify({
+          title: 'Title',
+          options: { label: 'Label', defaultValue: 'cached value', inputType: 'password' },
+        }),
+      }),
+    );
+
+    await expect(response.json()).resolves.toBe('typed value');
+    expect(requestPromptFromRenderer).toHaveBeenCalledWith({
+      title: 'Title',
+      label: 'Label',
+      defaultValue: 'cached value',
+      inputType: 'password',
+    });
   });
 });
