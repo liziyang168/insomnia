@@ -16,6 +16,7 @@ export function useOrganizationData(organizationId: string): OrganizationData {
 
   useEffect(() => {
     let cancelled = false;
+    setData(EMPTY_ORGANIZATION_DATA);
     services.appData.getOrganizationData(organizationId).then(result => {
       if (!cancelled) {
         setData(result);

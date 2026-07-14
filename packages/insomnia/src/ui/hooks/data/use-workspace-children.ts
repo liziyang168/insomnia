@@ -17,6 +17,7 @@ export function useCollectionWorkspaceChildren(
 
   useEffect(() => {
     if (!collectionWorkspaceIdsKey) {
+      setCollectionChildrenById(new Map());
       return;
     }
     let cancelled = false;
