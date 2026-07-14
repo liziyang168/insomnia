@@ -50,8 +50,9 @@ const WORKSPACE_CHILD_DOC_TYPES: string[] = [
 const MONITOR_DOC_TYPES: string[] = [
   models.project.type,
   models.workspace.type,
-  ...WORKSPACE_CHILD_DOC_TYPES,
+  models.gitRepository.type,
   models.workspaceMeta.type,
+  ...WORKSPACE_CHILD_DOC_TYPES,
 ];
 
 function findOrganizationAndProjectIdForWorkspace(
@@ -191,6 +192,17 @@ function invalidateCacheData(queryClient: QueryClient, changes: ChangeBufferEven
       const { organizationId } = findOrganizationAndProjectIdForWorkspace(queryClient, doc) || {};
       if (organizationId) {
         organizationIdsToRevalidate.add(organizationId);
+      }
+      continue;
+    }
+
+    if (doc.type === models.gitRepository.type) {
+      for (const [queryKey, data] of queryClient.getQueriesData<OrganizationData>({
+        queryKey: organizationDataKeys.all,
+      })) {
+        if (data?.projects.some(p => p.gitRepository?._id === doc._id)) {
+          organizationIdsToRevalidate.add(queryKey[1] as string);
+        }
       }
       continue;
     }

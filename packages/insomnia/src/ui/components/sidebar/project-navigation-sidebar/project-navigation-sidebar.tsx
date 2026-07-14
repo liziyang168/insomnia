@@ -568,12 +568,9 @@ const ProjectNavigationSidebarInner = (
 
             // Change indicators apply to git and cloud (remote) projects only
             const showSyncStatus = models.project.isRemoteProject(project) || models.project.isGitProject(project);
-            const hasUncommittedChanges = showSyncStatus
-              ? workspaceMetas.find(wm => wm.parentId === workspaceId)?.hasUncommittedChanges
-              : false;
-            const hasUnpushedChanges = showSyncStatus
-              ? workspaceMetas.find(wm => wm.parentId === workspaceId)?.hasUnpushedChanges
-              : false;
+            const workspaceMeta = showSyncStatus ? workspaceMetas.find(wm => wm.parentId === workspaceId) : undefined;
+            const hasUncommittedChanges = !!workspaceMeta?.hasUncommittedChanges;
+            const hasUnpushedChanges = !!workspaceMeta?.hasUnpushedChanges;
             if (hasUncommittedChanges || hasUnpushedChanges) {
               const workspaceProjectItem = items.find(i => i.kind === 'project' && i.doc._id === projectId) as Extract<
                 FlatItem,
