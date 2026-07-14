@@ -12,8 +12,16 @@ import { type HostCrypto, runTagInSandbox } from './plugin-tag-sandbox';
 // Vetted vendored npm libraries (M3): each is a real bundle running inside QuickJS. These smoke a
 // representative API per lib — bundling can subtly break a library, so we exercise it end-to-end.
 const nodeHostCrypto: HostCrypto = {
-  hash: (a, d, i, o) => nodeCrypto.createHash(a).update(d, i as nodeCrypto.Encoding).digest(o as nodeCrypto.BinaryToTextEncoding),
-  hmac: (a, k, d, o) => nodeCrypto.createHmac(a, k).update(d, 'utf8').digest(o as nodeCrypto.BinaryToTextEncoding),
+  hash: (a, d, i, o) =>
+    nodeCrypto
+      .createHash(a)
+      .update(d, i as nodeCrypto.Encoding)
+      .digest(o as nodeCrypto.BinaryToTextEncoding),
+  hmac: (a, k, d, o) =>
+    nodeCrypto
+      .createHmac(a, k)
+      .update(d, 'utf8')
+      .digest(o as nodeCrypto.BinaryToTextEncoding),
   randomBytes: n => nodeCrypto.randomBytes(n).toString('base64'),
   randomUUID: () => nodeCrypto.randomUUID(),
 };
