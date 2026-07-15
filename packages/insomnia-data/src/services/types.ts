@@ -21,6 +21,7 @@ import type {
 } from 'insomnia-data';
 
 export type ProjectWithGitRepository = Project & { gitRepository?: GitRepository };
+
 export interface OrganizationData {
   projects: ProjectWithGitRepository[];
   workspaces: Workspace[];
@@ -76,6 +77,7 @@ interface ScopeToChildren {
   'mcp': McpWorkspaceChildren;
 }
 
+// Maps workspace's `scope` to its specific children shape, instead of the full WorkspaceChildren union
 export type WorkspaceChildrenForScope<S extends WorkspaceScope | undefined> = S extends WorkspaceScope
   ? ScopeToChildren[S]
   : WorkspaceChildren;
